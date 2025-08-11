@@ -1,0 +1,7 @@
+[Thumbnailer Entry]
+Version=1.0
+Encoding=UTF-8
+Type=X-Thumbnailer
+Name=Clip Studio Paint Thumbnailer
+MimeType=application/x-clip;
+Exec=clip-thumbnailer.sh %i %o

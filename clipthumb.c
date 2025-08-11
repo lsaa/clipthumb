@@ -14,6 +14,7 @@
 #include <shobjidl.h>
 #include <shlwapi.h>
 #include <objbase.h>
+#include <strsafe.h>
 #include <stdio.h>
 
 static const WCHAR* PREVIEW_WINDOW_CLASS = L"ClipThumbPreviewWindow";
@@ -73,40 +74,133 @@ static BOOL CALLBACK find_largest_descendant(HWND child, LPARAM lParam) {
     return TRUE;
 }
 
+// Try to instantiate an IPreviewHandler for a given file extension by reading:
+//   HKCR\<ext>\ShellEx\<handler-category-guid>\(Default) = <handler-clsid>
+// Enumerate all subkeys under ShellEx and try each CLSID until one yields IPreviewHandler.
+static HRESULT CreatePreviewHandlerForExtension(LPCWSTR ext, IPreviewHandler** outHandler) {
+    if (!ext || !outHandler) return E_INVALIDARG;
+    *outHandler = NULL;
+
+    WCHAR keyPath[260];
+    if (FAILED(StringCchPrintfW(keyPath, 260, L"%s\\ShellEx", ext))) {
+        return E_FAIL;
+    }
+
+    HKEY hShellEx = NULL;
+    LONG rc = RegOpenKeyExW(HKEY_CLASSES_ROOT, keyPath, 0, KEY_READ, &hShellEx);
+    if (rc != ERROR_SUCCESS) {
+        // Some setups register handlers on the ProgID instead of the extension.
+        // Try resolving the default value of the extension to a ProgID and search there.
+        WCHAR progid[260];
+        DWORD type = 0, cb = sizeof(progid);
+        rc = RegGetValueW(HKEY_CLASSES_ROOT, ext, NULL, RRF_RT_REG_SZ, &type, progid, &cb);
+        if (rc == ERROR_SUCCESS && progid[0]) {
+            if (FAILED(StringCchPrintfW(keyPath, 260, L"%s\\ShellEx", progid))) {
+                return HRESULT_FROM_WIN32(ERROR_MORE_DATA);
+            }
+            rc = RegOpenKeyExW(HKEY_CLASSES_ROOT, keyPath, 0, KEY_READ, &hShellEx);
+        }
+        if (rc != ERROR_SUCCESS) {
+            return HRESULT_FROM_WIN32(rc);
+        }
+    }
+
+    DWORD index = 0;
+    WCHAR subkeyName[128];
+    DWORD subkeyLen;
+    FILETIME ft;
+    HRESULT hrFound = REGDB_E_CLASSNOTREG;
+
+    // Simple two-pass approach:
+    // 1) Prefer the preview handler category {8895b1c6-b41f-4c1c-a562-0d564250836f} if present.
+    // 2) Then try the rest.
+    const WCHAR* kPreviewCategory = L"{8895b1c6-b41f-4c1c-a562-0d564250836f}";
+    BOOL triedPreviewCategory = FALSE;
+
+    for (int pass = 0; pass < 2 && !*outHandler; ++pass) {
+        index = 0;
+        while (TRUE) {
+            subkeyLen = (DWORD)(sizeof(subkeyName) / sizeof(subkeyName[0]));
+            LONG er = RegEnumKeyExW(hShellEx, index++, subkeyName, &subkeyLen, NULL, NULL, NULL, &ft);
+            if (er == ERROR_NO_MORE_ITEMS)
+                break;
+            if (er != ERROR_SUCCESS)
+                continue;
+
+            if (pass == 0 && _wcsicmp(subkeyName, kPreviewCategory) != 0)
+                continue; // First pass only try preview handler category
+
+            if (pass == 1 && _wcsicmp(subkeyName, kPreviewCategory) == 0)
+                continue; // Second pass: skip, already tried
+
+            HKEY hSub = NULL;
+            WCHAR subPath[260];
+            if (FAILED(StringCchPrintfW(subPath, 260, L"%s\\%s", keyPath, subkeyName)))
+                continue;
+
+            if (RegOpenKeyExW(HKEY_CLASSES_ROOT, subPath, 0, KEY_READ, &hSub) != ERROR_SUCCESS)
+                continue;
+
+            WCHAR clsidStr[128] = {0};
+            DWORD type = 0;
+            DWORD cb = sizeof(clsidStr);
+            LONG rv = RegGetValueW(hSub, NULL, NULL, RRF_RT_REG_SZ, &type, clsidStr, &cb);
+            RegCloseKey(hSub);
+            if (rv != ERROR_SUCCESS || !clsidStr[0])
+                continue;
+
+            CLSID clsidPH;
+            if (FAILED(CLSIDFromString(clsidStr, &clsidPH)))
+                continue;
+
+            IUnknown* unk = NULL;
+            HRESULT hr = CoCreateInstance(&clsidPH, NULL, CLSCTX_INPROC_SERVER, &IID_IUnknown, (void**)&unk);
+            if (FAILED(hr) || !unk) {
+                hrFound = hr; // remember last failure
+                continue;
+            }
+
+            IPreviewHandler* ph = NULL;
+            hr = unk->lpVtbl->QueryInterface(unk, &IID_IPreviewHandler, (void**)&ph);
+            unk->lpVtbl->Release(unk);
+
+            if (SUCCEEDED(hr) && ph) {
+                *outHandler = ph;
+                hrFound = S_OK;
+                break;
+            } else {
+                hrFound = hr;
+            }
+        }
+    }
+
+    RegCloseKey(hShellEx);
+    return hrFound;
+}
+
 static BOOL ShowClipPreview(const WCHAR *inPath, const WCHAR *winTitle) {
-    CLSID clsidPH;
-    if (FAILED(CLSIDFromString(L"{9E6FA56B-AE86-49F9-AA1F-2517D81DE85C}", &clsidPH))) {
-        loge(L"Invalid PreviewHandler CLSID\n");
+    // Discover a preview handler dynamically
+    HRESULT hr = CreatePreviewHandlerForExtension(L".clip", &g_previewHandler);
+    if (FAILED(hr) || !g_previewHandler) {
+        loge(L"Failed to find a preview handler for .clip: 0x%08lX\n", hr);
         return FALSE;
     }
 
-    IUnknown *unk = NULL;
-    HRESULT hr = CoCreateInstance(&clsidPH, NULL, CLSCTX_INPROC_SERVER,
-                                  &IID_IUnknown, (void**)&unk);
-    if (FAILED(hr) || !unk) {
-        loge(L"CoCreateInstance failed: 0x%08lX\n", hr);
-        return FALSE;
-    }
-
+    // Initialize with file
     IInitializeWithFile *initF = NULL;
-    hr = unk->lpVtbl->QueryInterface(unk, &IID_IInitializeWithFile, (void**)&initF);
-    if (FAILED(hr)) {
-        loge(L"QI IInitializeWithFile failed: 0x%08lX\n", hr);
-        unk->lpVtbl->Release(unk);
+    hr = g_previewHandler->lpVtbl->QueryInterface(g_previewHandler, &IID_IInitializeWithFile, (void**)&initF);
+    if (FAILED(hr) || !initF) {
+        loge(L"Handler does not support IInitializeWithFile: 0x%08lX\n", hr);
+        g_previewHandler->lpVtbl->Release(g_previewHandler);
+        g_previewHandler = NULL;
         return FALSE;
     }
     hr = initF->lpVtbl->Initialize(initF, (LPWSTR)inPath, STGM_READ);
     initF->lpVtbl->Release(initF);
     if (FAILED(hr)) {
         loge(L"InitializeWithFile failed: 0x%08lX\n", hr);
-        unk->lpVtbl->Release(unk);
-        return FALSE;
-    }
-
-    hr = unk->lpVtbl->QueryInterface(unk, &IID_IPreviewHandler, (void**)&g_previewHandler);
-    unk->lpVtbl->Release(unk);
-    if (FAILED(hr)) {
-        loge(L"QI IPreviewHandler failed: 0x%08lX\n", hr);
+        g_previewHandler->lpVtbl->Release(g_previewHandler);
+        g_previewHandler = NULL;
         return FALSE;
     }
 

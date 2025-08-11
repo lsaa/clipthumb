@@ -4,7 +4,7 @@
 XVFB_DISPLAY="${XVFB_DISPLAY:-:8842}"
 XVFB_RESOLUTION="1024x1024x24"
 DEFAULT_THUMB_SIZE="256"
-WINEPREFIX="/home/user/.local/share/wineprefixes/csp"
+WINEPREFIX="/home/lsaa/.local/share/wineprefixes/csp"
 
 # --- Session Management ---
 SESSION_ID="${XVFB_DISPLAY//:/}"

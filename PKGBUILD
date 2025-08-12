@@ -1,6 +1,6 @@
 pkgname=clipstudio-clip-thumbnailer
 pkgver=1.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Thumbnailer for Clip Studio Paint .clip files using Wine preview handler with Xvfb/X11 capture"
 arch=('x86_64')
 depends=(

@@ -5,7 +5,6 @@ set -euo pipefail
 XVFB_DISPLAY="${XVFB_DISPLAY:-:8842}"
 XVFB_RESOLUTION="1024x1024x24"
 DEFAULT_THUMB_SIZE="256"
-WINEPREFIX="/home/user/.local/share/wineprefixes/csp"
 
 # Files (no "clients file")
 SESSION_ID="${XVFB_DISPLAY//:/}"
@@ -198,7 +197,7 @@ main() {
     trap 'kill "${wine_pid:-}" 2>/dev/null || true; cleanup_session_if_empty' EXIT
 
     export DISPLAY="$XVFB_DISPLAY"
-    /usr/lib/clipthumb/clipthumb.exe "$input_file" "$unique_id" &>/dev/null &
+    WINEPREFIX="/home/user/.local/share/wineprefixes/csp" wine /usr/lib/clipthumb/clipthumb.exe "$input_file" "$unique_id" &
     wine_pid=$!
 
     # wait for the window to appear (timeout 10s)

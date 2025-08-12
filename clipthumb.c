@@ -212,8 +212,8 @@ static BOOL ShowClipPreview(const WCHAR *inPath, const WCHAR *winTitle) {
         return FALSE;
     }
 
-    int winWidth = 800;
-    int winHeight = 800;
+    int winWidth = 1024;
+    int winHeight = 1024;
     HWND hwndPreview = CreateWindowExW(
         0,
         PREVIEW_WINDOW_CLASS,
@@ -268,34 +268,6 @@ static BOOL ShowClipPreview(const WCHAR *inPath, const WCHAR *winTitle) {
         g_previewHandler->lpVtbl->Release(g_previewHandler);
         g_previewHandler = NULL;
         return FALSE;
-    }
-
-    // Give the handler a moment to instantiate child controls
-    Sleep(200);
-
-    // Try to size the top-level window to the largest visible child content
-    EnumCtx ctx;
-    ctx.host = hwndHost;
-    ctx.best = NULL;
-    ctx.bestArea = 0;
-
-    EnumChildWindows(hwndHost, find_largest_descendant, (LPARAM)&ctx);
-
-    if (ctx.best) {
-        RECT cr;
-        if (GetWindowRect(ctx.best, &cr)) {
-            POINT pts[2] = { { cr.left, cr.top }, { cr.right, cr.bottom } };
-            MapWindowPoints(NULL, hwndPreview, pts, 2);
-            int childW = pts[1].x - pts[0].x;
-            int childH = pts[1].y - pts[0].y;
-            if (childW > 0 && childH > 0) {
-                SetWindowPos(hwndHost, NULL, 0, 0, childW, childH, SWP_NOZORDER | SWP_NOACTIVATE);
-                SetWindowPos(hwndPreview, NULL, 0, 0, childW, childH, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-                RECT newRc = { 0, 0, childW, childH };
-                g_previewHandler->lpVtbl->SetWindow(g_previewHandler, hwndHost, &newRc);
-                SendMessageW(hwndHost, WM_SIZE, 0, MAKELPARAM(childW, childH));
-            }
-        }
     }
 
     // Message loop until killed by the launcher
